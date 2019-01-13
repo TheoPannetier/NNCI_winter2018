@@ -1,0 +1,263 @@
+#include <iostream>
+#include <vector>
+#include <chrono>
+#include <random>        //random number generation
+#include <algorithm>
+#include <iterator>
+#include <string>
+#include <cmath>
+#include <functional>
+#include <math.h>       // for pi
+#include <numeric>      // std::iota
+#include <limits>       // for infinity function
+
+#include <fstream>
+
+
+using namespace std;
+std::mt19937 rng(static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+
+std::bernoulli_distribution d(0.5);
+std::normal_distribution<double> featureGenerator(0.0, 1.0);
+std::normal_distribution<double> weightGenerator(0.0, 1.0);
+
+double generateFeature() {
+    double dFeature = featureGenerator(rng);
+    return dFeature;
+}
+
+double getVectorNorm(vector<double> argVector) {
+    double norm = 0.0;
+    for (int i = 0; i < argVector.size(); ++i) {
+        norm += argVector[i] * argVector[i];
+    }
+    norm = sqrt(norm);
+    return norm;
+}
+
+vector<double> generateTeacher(int N) {
+    vector<double> teacherVector(N, 0.0);
+    for (int i = 0; i < N; ++i) {
+        teacherVector[i] = weightGenerator(rng);
+    }
+    double teacherNorm = getVectorNorm(teacherVector);
+    // Normalize each element to get norm(teacher)^2 = N
+    for (int i = 0; i < N; ++i) {
+        teacherVector[i] *= sqrt(N) / teacherNorm ;
+    }
+    teacherNorm = getVectorNorm(teacherVector);
+    cout << "Squared teacher length = " << teacherNorm * teacherNorm << endl ;
+    return teacherVector;
+};
+
+
+
+class input // an object containing a pair of a feature vector of N dimensions and the associated label, both randomly generated
+{
+public:
+    //initialize input vector with random values, initialize true label s randomly
+    input(vector<double> aTeacherVector);
+    
+    double get_feature(int i) const { return featureVector[i]; } // call a single element of the feature vector of the object
+    int get_truelabel() const { return label; } // call the label of the object
+    
+    double getDotProduct(vector<double> weightVector) {
+        // Computes dot product of argument vector with objects' feature vector
+        // Must be defined inside class since the feature vector is private
+        if (weightVector.size() != featureVector.size()) {
+            throw std::string("feature and weight vectors with different N - impossible to compute dot product.");
+        } // assert
+        double dotProduct = 0.0;
+        for (int i = 0; i < weightVector.size(); ++i) {
+            dotProduct += weightVector[i] * featureVector[i];
+        }
+        return dotProduct;
+    }
+    
+    void updateWeights(vector<double> &weightVector) {
+        // Update weight vector in argument using the objects' feature vector
+        // Must be defined inside class since the feature vector is private
+        if (weightVector.size() != featureVector.size()) {
+            throw std::string("feature and weight vectors with different N - impossible to compute dot product.");
+        } // assert
+        for (int i = 0; i < weightVector.size(); ++i) {
+            weightVector[i] += featureVector[i] * label / featureVector.size();
+        }
+    }
+    
+private:
+    
+    int label; // actual label value {-1 ; 1}
+    vector<double> featureVector;
+    
+    void initialize(vector<double> aTeacherVector) {
+        // Generate N random features
+        generate(featureVector.begin(), featureVector.end(), generateFeature);  // mean 0, variance 1
+        // Compute label values from newly drawn features and teacher vector
+        double dotProduct = getDotProduct(aTeacherVector);
+        // Get label from sign function
+        dotProduct > 0 ? label = 1 : label = -1;
+    }
+    
+};
+
+//initializer input class
+input::input(vector<double> aTeacherVector) {
+    vector<double> vectorTemplate(aTeacherVector.size());
+    featureVector = vectorTemplate;
+    initialize(aTeacherVector);
+}
+
+
+//To fill vector with equidistant values for alpha
+struct double_iota
+{
+    double_iota(double inc, double init_value = 0.0) : _value(init_value), _inc(inc) {}
+    
+    operator double() const { return _value; }
+    double_iota& operator++() { _value += _inc; return *this; }
+    double _value;
+    double _inc;
+};
+
+
+int main()
+{
+    // create and open output stream and file
+    ofstream myfile;
+    myfile.open("output.txt");
+    myfile << "N\t" << "Alpha\t" << "MeanGenError\t" << "SdGenError\t" << "nD\t" << "nMax\t" << endl;
+    
+    // General parameters
+    int nD = 10;
+    int nMax = 100 ; // max number of sweeps through data (epochs)
+    
+    vector<int> vectorN = {10, 20, 100}; // N
+    // Define alpha
+    vector<int> vectorAlpha(50);
+    iota(vectorAlpha.begin(), vectorAlpha.end(), double_iota(1, 1)); // set alpha values * 10 (see def of P)
+    
+    // Loop over values for P
+    for (int iN = 0; iN < vectorN.size(); ++iN) {
+        
+        int N = vectorN[iN];
+        
+        //Loop over different alphas
+        for (int iA = 0; iA < vectorAlpha.size(); ++iA) {
+            
+            int P = N * vectorAlpha[iA] / 10; // division by ten is a trick to keep alpha (and then P) as an integer
+            cout << "N = " << N << endl;
+            cout << "A = " << vectorAlpha[iA] / 10 << endl;
+            cout << "P = " << P << endl;
+            cout << endl;
+
+            // Declare vector to store generalization errors across replicates
+            vector<double> genErrorVector(nD);
+            
+            // Iterations with different, randomly generated datasets
+            for (int iD = 0; iD < nD; ++iD) {
+                
+                // Generate a teacher vector
+                vector<double> teacherVector = generateTeacher(N);
+
+                // Generate dataset as a vector of 'input' objects
+                input inputTemplate(teacherVector); // declare empty object of class input
+                
+                // Declare dataset
+                vector<input> dataset(P, teacherVector); // contains P empty N-dim vectors
+                
+                // Fill  dataset
+                for (int mu = 0; mu < P; ++mu) {
+                    input inputTemplate(teacherVector);
+                    dataset[mu] = inputTemplate;
+                }
+                
+                // Initialize stability
+                double dMinStability = std::numeric_limits<double>::infinity(); // set to infinite so first nu has smaller stability
+                int indexMinStability = 0; // mu(t)
+                
+                //create vector of weights, initial values 0.0
+                vector<double> studentVector(N, 0.0);
+                
+                // Minover algorithm
+                // Loop through epochs until nmax is reached
+                for (int t = 0; t < nMax * P ; ++t) {
+                    
+                    cout << "t = " << t << endl;
+                    
+                    dMinStability = std::numeric_limits<double>::infinity(); //CN
+                    
+                    // Loop through points to find point mu(t) of minimal stability
+                    for (int nu = 0; nu < P; ++nu) {
+                        
+                        double dotProductStudent = dataset[nu].getDotProduct(studentVector);
+                        //double studentNorm = getVectorNorm(studentVector);  //CN:here unnecessary?!
+                        double kappa = dotProductStudent * dataset[nu].get_truelabel();  //CN:division by zero deleted
+                        
+                        if (kappa < dMinStability) {
+                            indexMinStability = nu;
+                            dMinStability = kappa;
+                        }
+                    }
+                    
+                    cout << "stability = " << dMinStability << endl;  //CN
+
+                    dataset[indexMinStability].updateWeights(studentVector);
+                    
+                    double dotStudentTeacher = 0.0;
+                    for (int i = 0; i < studentVector.size(); ++i) {
+                        dotStudentTeacher += studentVector[i] * teacherVector[i];
+                    }
+                    cout << "student dot teacher = " << dotStudentTeacher << endl;
+                    double normStudent = getVectorNorm(studentVector);
+                    cout << "student norm = " << normStudent << endl;
+                    double normTeacher = getVectorNorm(teacherVector);
+                    cout << "teacher norm = " << normTeacher << endl;
+                    double generalizationError = acos(dotStudentTeacher / (normStudent * normTeacher)) / 3.142;
+                    cout << "gen error = " << generalizationError << endl;
+                    
+                    cout << endl;
+                    
+                } // end of minover algorithm
+                
+                // Compute generalization error
+                double dotStudentTeacher = 0.0;
+                for (int i = 0; i < studentVector.size(); ++i) {
+                    dotStudentTeacher += studentVector[i] * teacherVector[i];
+                }
+                double normStudent = getVectorNorm(studentVector);
+                double normTeacher = getVectorNorm(teacherVector);
+                double generalizationError = acos(dotStudentTeacher / (normStudent * normTeacher)) / 3.142;
+                
+                genErrorVector[iD] = generalizationError;
+                
+            } // end of loop through (nD) replicates
+            
+            // Compute average generalization error over nD replicates
+            double dMeanGenError = 0.0;
+            for (int d = 0; d < genErrorVector.size(); ++d) {
+                dMeanGenError += genErrorVector[d];
+            }
+            //double genErrorVecSize = genErrorVector.size();
+            //cout << "genErrorVecSize = " << genErrorVecSize << endl;
+            dMeanGenError /= genErrorVector.size();
+            
+            cout << endl;
+            cout << "MeanGenError = " << dMeanGenError << endl;
+
+            double dSdGenError = 0.0;
+            for (int d = 0; d < genErrorVector.size(); ++d) {
+                dSdGenError += (genErrorVector[d] - dMeanGenError) * (genErrorVector[d] - dMeanGenError);
+            }
+            dSdGenError = sqrt(dSdGenError / (genErrorVector.size() - 1));
+            
+            
+            // Output data
+            double dAlpha = vectorAlpha[iA] / 10.0;
+            myfile << N << "\t" << dAlpha << "\t" << dMeanGenError << "\t" << dSdGenError << "\t" << nD << "\t" << nMax << "\t" << endl;
+            
+            
+        } // end of loop through alphas
+        
+    } // end of loop through P values
+}
