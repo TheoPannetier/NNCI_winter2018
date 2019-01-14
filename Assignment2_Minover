@@ -131,6 +131,7 @@ int main()
     // General parameters
     int nD = 10;
     int nMax = 100 ; // max number of sweeps through data (epochs)
+    int iMaxStepsWithoutChange = 10;
     
     vector<int> vectorN = {10, 20, 100}; // N
     // Define alpha
@@ -179,9 +180,13 @@ int main()
                 //create vector of weights, initial values 0.0
                 vector<double> studentVector(N, 0.0);
                 
+                int tmax = nMax * P;
+                vector<double> errorRecordVector(tmax);
+                int iStepsWithNoChange = 0;
+                
                 // Minover algorithm
                 // Loop through epochs until nmax is reached
-                for (int t = 0; t < nMax * P ; ++t) {
+                for (int t = 0; t < tmax ; ++t) {
                     
                     cout << "t = " << t << endl;
                     
@@ -216,8 +221,23 @@ int main()
                     double generalizationError = acos(dotStudentTeacher / (normStudent * normTeacher)) / 3.142;
                     cout << "gen error = " << generalizationError << endl;
                     
-                    cout << endl;
+                    errorRecordVector[t] = generalizationError;
                     
+                    if (t > 0) {
+                        double dErrorChange = abs(errorRecordVector[t-1] - errorRecordVector[t]);
+                        cout << "errorChange = " << dErrorChange << endl;
+                        //cout << "in proportion = " << abs(dErrorChange) / errorRecordVector[t] << endl;
+                        if (dErrorChange < 0.005){
+                            ++iStepsWithNoChange;
+                        }
+                        if (iStepsWithNoChange > iMaxStepsWithoutChange) {
+                            cout << "\nEscape minover at t = " << t << endl;
+                            break;
+                        }
+                    }
+                    
+                    cout << endl;
+
                 } // end of minover algorithm
                 
                 // Compute generalization error
