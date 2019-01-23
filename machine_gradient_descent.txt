@@ -1,0 +1,318 @@
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <chrono>
+#include <random>
+#include <string>
+#include <cassert>
+#include <cmath>
+#include <math.h>
+#include <exception>
+#include <cstdlib>
+
+using namespace std;
+
+                        // Global parameters
+int N = 50;             // nb of dimensions
+int K = 2;              // nb of hidden units in the machine
+int tmax = 500;         // training time, in units of P training steps
+int nbRuns = 10;        // nb of replicates, output is averaged on this
+
+std::mt19937 rng(static_cast<unsigned>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+std::normal_distribution<double> weightGenerator(0.0, 1.0);
+
+double getDotProduct(vector<double> vec1, vector<double> vec2) {
+    // Computes dot product of argument vector with objects' feature vector
+    assert(vec1.size() == vec2.size());
+    assert(vec1.size() == N);
+    
+    double dotProduct = 0.0;
+    for (int i = 0; i < vec1.size(); ++i) {
+        dotProduct += vec1[i] * vec2[i];
+    }
+    return dotProduct;
+}
+
+double getVectorNorm(vector<double> argVector) {
+    double norm = 0.0;
+    for (int i = 0; i < argVector.size(); ++i) {
+        norm += argVector[i] * argVector[i];
+    }
+    assert(norm >= 0.0);
+    norm = sqrt(norm);
+    return norm;
+}
+
+class studentMachine
+{
+public:
+    
+    void initialize_weights();
+    double getWeight(const int &, const int &);
+    double getSigma(const vector<double> &);
+    void updateWeights(const vector<double> &, const double &, const double &);
+    double computeError(const vector< vector<double> > &, const vector<double> &, const int &, const int &);
+    double computeGeneralizationError(const vector< vector<double> > &, const vector<double> &);
+
+private:
+    vector< vector<double> > hiddenWeights;
+    double get_hiddenLabel(const vector<double> &, const vector<double> &);
+    
+};
+
+void studentMachine::initialize_weights(){
+    
+    // Initialize weight vectors
+    for (int k = 0; k < K; ++k) {
+        
+        vector<double> weightVector(N, 0.0);
+        
+        for (int i = 0; i < N; ++i) {
+            weightVector[i] = weightGenerator(rng);
+        }
+
+        // Normalize each element to get norm(weight)^2 = 1
+        double weightNorm = getVectorNorm(weightVector);
+        for (int i = 0; i < N; ++i) {
+            weightVector[i] /= weightNorm ;
+        }
+        weightNorm = getVectorNorm(weightVector);
+        assert(weightNorm * weightNorm <= 1.00001); assert(weightNorm * weightNorm >= 0.99999);
+        // Add to hidden layer
+        hiddenWeights.push_back(weightVector);
+    }
+    assert(hiddenWeights.size() == K);
+};
+
+double studentMachine::getWeight(const int &k, const int &i){
+    double dWeight = hiddenWeights[k][i];
+    return dWeight;
+}
+
+double studentMachine::get_hiddenLabel(const vector<double> &weightVector, const vector<double> &featureVector){
+    assert(weightVector.size() == featureVector.size());
+    double S = tanh(getDotProduct(weightVector, featureVector));
+    assert(S >= -1); assert(S <= 1);
+    return S;
+}
+
+double studentMachine::getSigma(const vector<double> &featureVector){
+    // soft-committee machine: sigma is the sum of hidden labels
+    double sigma_mu = 0.0;
+    for (int k = 0; k < K; ++k) {
+        sigma_mu += studentMachine::get_hiddenLabel(hiddenWeights[k], featureVector);
+    }
+    return sigma_mu;
+}
+
+void studentMachine::updateWeights(const vector<double> &featureVector, const double &tau_nu, const double &eta){
+    
+    assert(featureVector.size() == N);
+    assert(hiddenWeights.size() == K);
+
+    // compute sigma_nu - tau_nu
+    double studentError = getSigma(featureVector) - tau_nu;
+    //cout << "Student error =  " << studentError << endl;
+
+    // for each of the two weights
+    for (int k = 0; k < K; ++k) {
+        
+        assert(hiddenWeights[k].size() == N);
+        assert(hiddenWeights[k].size() == featureVector.size());
+
+        // compute gradient of sigma_mu w.r.t. w_k
+        double gradientSigma = 1 - pow( tanh( getDotProduct(hiddenWeights[k], featureVector) ), 2) ;
+        assert(gradientSigma >= 0.0); assert(gradientSigma <= 1.0);
+        //cout << "sigma gradient " << k+1 << " = " << gradientSigma << endl;
+        for (int i = 0; i < N; ++i) {
+            // compute gradient of e_nu w.r.t. w_k
+            double gradientError = studentError * gradientSigma * featureVector[i];
+            //cout << "error gradient " << i+1 << " = " << gradientError << endl;
+
+            hiddenWeights[k][i] -= (eta * gradientError);
+        }
+        assert(hiddenWeights[k].size() == N);
+    }
+}
+
+double studentMachine::computeError(const vector< vector<double> > &Xi, const vector<double> &tauVector, const int &iFrom, const int &iTo){
+    double dError = 0.0;
+    for (int mu = iFrom; mu < iTo; ++mu) {
+        assert(Xi[mu].size() == N);
+        dError += pow( studentMachine::getSigma(Xi[mu]) - tauVector[mu], 2 );
+    }
+    dError /= (2.0 * (iTo - iFrom) );
+    return dError;
+}
+
+int main(int argc, const char * argv[]) {
+    
+    const int P = stoi(argv[1]);    // nb of single examples
+    const int Q = P;                // nb of data points to generalize on
+    
+    const double eta = stod(argv[2]);     // learning rate
+    const double etaJumpValue = 2.0;      // Jump height
+    //const int iJumpFrequency = 100;        // Learning rate
+    assert( P + Q <= 5000);
+    
+    // Set distribution to sample nu in
+    std::uniform_int_distribution<int> nu_sampler(0, P-1);
+    
+    // Set output filenames
+    const string strFormat(".txt");
+    const string strP = to_string(P);
+    const string str_("_");
+    const string strEta = to_string(eta);
+    const string strPrefixWeight("NNCI3_final_weights_");
+    const string strErrorPrefix("NNCI3_error_output_");
+    const string strErrorFilename = strErrorPrefix + strP + str_ + strEta + strFormat;
+    const string strWeightFilename = strPrefixWeight + strP + str_ + strEta + strFormat;
+    
+    // Open input file stream
+    std::ifstream xi_ifs("xi.txt"); if(!xi_ifs.is_open()) {
+        std::cerr << "error: unable to open xi data file\n";
+        exit(EXIT_FAILURE);
+    }
+    
+    // Declare array Xi
+    std::vector< std::vector<double> > Xi;
+    // Fill array Xi with feature vectors built from input
+    for (int mu = 0; mu < P + Q; ++mu) {
+        vector<double> featureVector;
+        for (int i = 0; i < N; ++i) {
+            double dInput;
+            xi_ifs >> dInput;
+            featureVector.push_back(dInput);
+            if (xi_ifs.eof() && featureVector.size() < N) {
+                cerr << "input error: missing xi dimension in last entry.\n";
+                exit(EXIT_FAILURE);
+            }
+        }
+        Xi.push_back(featureVector);
+        if (xi_ifs.eof() && Xi.size() < P + Q) {
+            cerr << "input error: missing entries for xi.\n";
+            exit(EXIT_FAILURE);
+        }
+    }
+    // Close input file stream
+    xi_ifs.close();
+    
+    assert(Xi.size() == P + Q);
+    
+    // Fill vector tau with input values
+    vector<double> tauVector;
+    std::ifstream tau_ifs("tau.txt"); if(!tau_ifs.is_open()) {
+        std::cerr << "error: unable to open tau data file\n";
+        exit(EXIT_FAILURE);
+    }
+    for (int mu = 0; mu < P + Q; ++mu) {
+        double dTauInput;
+        tau_ifs >> dTauInput;
+        tauVector.push_back(dTauInput);
+        if (tau_ifs.eof() && tauVector.size() < P + Q) {
+            cerr << "input error: missing entries for tau.\n";
+            exit(EXIT_FAILURE);
+        }
+    }
+    tau_ifs.close();
+    assert(tauVector.size() == P + Q);
+
+    
+    // Declare vector to store mean error (cost function) values over time
+    double dInitialError = 0.0; // just for t = 0
+    double dInitialGenError = 0.0;
+    vector<double> errorTimeVector(tmax, 0.0);
+    vector<double> genErrorTimeVector(tmax, 0.0);
+    
+    // Open output file to record store weight vectors
+    std::ofstream weights_output;
+    weights_output.open(strWeightFilename);
+    
+    for (int n = 0; n < nbRuns; ++n) {
+        
+        cout << "Replicate " << n + 1 << endl;
+        cout << endl;
+        
+        // Declare & Initialise student weights
+        studentMachine myMachine;
+        myMachine.initialize_weights();
+        cout << "Initial weights" << endl;
+        for (int k = 0; k < K; ++k) {
+            for (int i = 0; i < N; ++i) {
+                cout << myMachine.getWeight(k, i) << " ";
+            }
+            cout << endl;
+        }
+        
+        double dError = myMachine.computeError(Xi, tauVector, 0, P);
+        double dGenError = myMachine.computeError(Xi, tauVector, P, P+Q);
+        
+        cout << "Initial error = " << dError << endl;
+        dInitialError += dError;
+        cout << "Initial generalization error = " << dGenError << endl;
+        dInitialGenError += dGenError;
+        cout << endl;
+        
+        // Training algorithm
+        cout << "Starting training..." << endl;
+        cout << endl;
+        for (int t = 0 ; t < tmax; ++t) {
+            cout << "t = " << t + 1 << endl;
+            for (int mu = 0; mu < P; ++mu) {
+                // Randomly select a feature vector to update
+                int nu = nu_sampler(rng);
+                assert(nu >= 0); assert(nu < P);
+                // Perform the update step
+                
+                if (mu == 249) {
+                    myMachine.updateWeights(Xi[nu], tauVector[nu], etaJumpValue);
+                }
+                else {
+                    myMachine.updateWeights(Xi[nu], tauVector[nu], eta);
+                }
+            }
+            
+            // Compute error at time t
+            double dError = myMachine.computeError(Xi, tauVector, 0, P);
+            // output
+            cout << "Error = " << dError << endl;
+            errorTimeVector[t] += dError;
+            // Compute generalization error at time t
+            double dGenError = myMachine.computeError(Xi, tauVector, P, P+Q);
+            cout << "Generalization error = " << dGenError << endl;
+            genErrorTimeVector[t] += dGenError;
+            
+            cout << endl;
+        } // End of loop through t
+        
+        // Output final values of both weight vectors
+        cout << "Final weights" << endl;
+        for (int k = 0; k < K; ++k) {
+            for (int i = 0; i < N; ++i) {
+                cout << myMachine.getWeight(k, i) << " ";
+                weights_output << myMachine.getWeight(k, i) << " ";
+            }
+            cout << endl;
+            weights_output << endl;
+        }
+        
+    } // End of loop through replicates
+    weights_output.close();
+    
+    // Write output from error-time-series vector
+    std::ofstream error_output;
+    error_output.open(strErrorFilename);
+    error_output << "t\t" << "Error\t" << "GenError" << endl;
+    // Output initial values
+    error_output << 0 << "\t" << dInitialError/nbRuns << "\t" << dInitialGenError /nbRuns << endl;
+    // Output time-series
+    for (int t = 0; t < tmax; ++t) {
+        // Average over nbRuns
+        errorTimeVector[t] /= nbRuns;
+        genErrorTimeVector[t] /= nbRuns;
+        error_output << t + 1 << "\t" << errorTimeVector[t] <<"\t" << genErrorTimeVector[t] << endl;
+    }
+    error_output.close();
+    cout << "eta = " << eta << endl;
+    return 0;
+}
